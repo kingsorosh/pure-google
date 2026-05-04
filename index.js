@@ -1,7 +1,6 @@
 const express = require('express');
 const app = express();
 
-// دقیقاً همون متغیر محیطی که خودت داشتی
 const TARGET_BASE = (process.env.TARGET_DOMAIN || "").replace(/\/$/, "");
 
 const STRIP_HEADERS = new Set([
@@ -11,7 +10,6 @@ const STRIP_HEADERS = new Set([
   "x-forwarded-port",
 ]);
 
-// ما بادیِ ریکوئست رو پردازش نمی‌کنیم تا به صورت "استریمِ خام" برای XHTTP بمونه
 app.use((req, res, next) => {
   next();
 });
@@ -22,7 +20,6 @@ app.all('*', async (req, res) => {
   }
 
   try {
-    // بازسازی دقیق مسیر (path)
     const targetUrl = TARGET_BASE + req.originalUrl;
 
     const out = new Headers();
@@ -49,27 +46,24 @@ app.all('*', async (req, res) => {
     const method = req.method;
     const hasBody = method !== "GET" && method !== "HEAD";
 
-    // تنظیمات دقیقِ Fetch بر اساس کد خودت
     const fetchOptions = {
       method,
       headers: out,
-      duplex: "half", // حیاتی‌ترین بخش برای XHTTP
+      duplex: "half", 
       redirect: "manual",
     };
 
     if (hasBody) {
-      fetchOptions.body = req; // ارسال مستقیم استریم کلاینت به سرور آلمان
+      fetchOptions.body = req; 
     }
 
     const targetResponse = await fetch(targetUrl, fetchOptions);
 
-    // تنظیم هدرهای بازگشتی به کلاینت
     res.status(targetResponse.status);
     targetResponse.headers.forEach((value, key) => {
       res.setHeader(key, value);
     });
 
-    // استریم کردنِ پاسخ سرور آلمان به سمت کلاینت تو (بدون قطع شدن)
     if (targetResponse.body) {
       for await (const chunk of targetResponse.body) {
         res.write(chunk);
@@ -85,7 +79,6 @@ app.all('*', async (req, res) => {
   }
 });
 
-// این همون بخشیه که به گوگل اجازه می‌ده پورت رو داینامیک تنظیم کنه
 const PORT = process.env.PORT || 8080;
 app.listen(PORT, () => {
   console.log(`XHTTP Proxy is actively listening on Port ${PORT}`);
