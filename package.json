@@ -1,5 +1,5 @@
 {
-  "name": "xhttp-cloud-run",
+  "name": "pure-cloud-run",
   "version": "1.0.0",
   "main": "index.js",
   "scripts": {
