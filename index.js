@@ -185,8 +185,12 @@ app.all('*', async (req, res) => {
 });
 
 const PORT = process.env.PORT || 8080;
-app.listen(PORT, () => {
+const server = app.listen(PORT, () => {
   console.log(`XHTTP Proxy is actively listening on Port ${PORT}`);
   console.log(`Max Upload Speed: ${MAX_UP_BPS ? MAX_UP_BPS + ' bytes/sec' : 'Unlimited'}`);
   console.log(`Max Download Speed: ${MAX_DOWN_BPS ? MAX_DOWN_BPS + ' bytes/sec' : 'Unlimited'}`);
 });
+
+// ===================MAGIC=======================
+server.keepAliveTimeout = 60000;
+server.headersTimeout = 65000;   
