@@ -148,6 +148,14 @@ app.all('*', async (req, res) => {
       redirect: "manual",
     };
 
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => {
+      controller.abort();
+    }, 60000); 
+    
+    fetchOptions.signal = controller.signal;
+    // ======================================================
+
     if (hasBody) {
       const uploadNodeStream = GLOBAL_UPLOAD_LIMITER
         ? req.pipe(createThrottleTransform(GLOBAL_UPLOAD_LIMITER))
@@ -155,7 +163,12 @@ app.all('*', async (req, res) => {
       fetchOptions.body = Readable.toWeb(uploadNodeStream); 
     }
 
-    const targetResponse = await fetch(targetUrl, fetchOptions);
+    let targetResponse;
+    try {
+      targetResponse = await fetch(targetUrl, fetchOptions);
+    } finally {
+      clearTimeout(timeoutId);
+    }
 
     res.status(targetResponse.status);
     targetResponse.headers.forEach((value, key) => {
@@ -177,6 +190,13 @@ app.all('*', async (req, res) => {
     }
 
   } catch (err) {
+    if (err.name === 'AbortError') {
+      if (!res.headersSent) {
+        return res.status(504).send("Gateway Timeout: Connection Reset by 60s Rule");
+      }
+      return;
+    }
+    
     console.error("relay error:", err);
     if (!res.headersSent) {
       return res.status(502).send("Bad Gateway: Tunnel Failed");
@@ -193,4 +213,4 @@ const server = app.listen(PORT, () => {
 
 // ===================MAGIC=======================
 server.keepAliveTimeout = 60000;
-server.headersTimeout = 65000;   
+server.headersTimeout = 65000;
