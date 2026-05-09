@@ -54,7 +54,7 @@ function createGlobalLimiter(bytesPerSecond) {
       timer = null;
       tryDrain();
       if (queue.length > 0) schedule();
-    }, 10); 
+    }, 5);
   }
 
   return {
@@ -106,9 +106,13 @@ const STRIP_HEADERS = new Set([
   "x-forwarded-port",
 ]);
 
+app.use((req, res, next) => {
+  next();
+});
+
 app.all('*', async (req, res) => {
   if (!TARGET_BASE) {
-    return res.status(500).end();
+    return res.status(500).send("Misconfigured: TARGET_DOMAIN is not set");
   }
 
   try {
@@ -118,7 +122,8 @@ app.all('*', async (req, res) => {
 
     for (const [k, v] of Object.entries(req.headers)) {
       const lowerK = k.toLowerCase();
-      if (STRIP_HEADERS.has(lowerK) || lowerK.startsWith("x-vercel-")) continue;
+      if (STRIP_HEADERS.has(lowerK)) continue;
+      if (lowerK.startsWith("x-vercel-")) continue;
       
       if (lowerK === "x-real-ip") {
         clientIp = v;
@@ -143,6 +148,14 @@ app.all('*', async (req, res) => {
       redirect: "manual",
     };
 
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => {
+      controller.abort();
+    }, 60000); 
+    
+    fetchOptions.signal = controller.signal;
+    // ======================================================
+
     if (hasBody) {
       const uploadNodeStream = GLOBAL_UPLOAD_LIMITER
         ? req.pipe(createThrottleTransform(GLOBAL_UPLOAD_LIMITER))
@@ -150,7 +163,12 @@ app.all('*', async (req, res) => {
       fetchOptions.body = Readable.toWeb(uploadNodeStream); 
     }
 
-    const targetResponse = await fetch(targetUrl, fetchOptions);
+    let targetResponse;
+    try {
+      targetResponse = await fetch(targetUrl, fetchOptions);
+    } finally {
+      clearTimeout(timeoutId);
+    }
 
     res.status(targetResponse.status);
     targetResponse.headers.forEach((value, key) => {
@@ -172,17 +190,27 @@ app.all('*', async (req, res) => {
     }
 
   } catch (err) {
-    if (!res.headersSent) {
-      return res.status(502).end();
+    if (err.name === 'AbortError') {
+      if (!res.headersSent) {
+        return res.status(504).send("Gateway Timeout: Connection Reset by 60s Rule");
+      }
+      return;
     }
-    res.destroy(); 
+    
+    console.error("relay error:", err);
+    if (!res.headersSent) {
+      return res.status(502).send("Bad Gateway: Tunnel Failed");
+    }
   }
 });
 
 const PORT = process.env.PORT || 8080;
-const server = app.listen(PORT);
+const server = app.listen(PORT, () => {
+  console.log(`XHTTP Proxy is actively listening on Port ${PORT}`);
+  console.log(`Max Upload Speed: ${MAX_UP_BPS ? MAX_UP_BPS + ' bytes/sec' : 'Unlimited'}`);
+  console.log(`Max Download Speed: ${MAX_DOWN_BPS ? MAX_DOWN_BPS + ' bytes/sec' : 'Unlimited'}`);
+});
 
-// ===================MAGIC (The Real Executioners)=======================
+// ===================MAGIC=======================
 server.keepAliveTimeout = 60000;
 server.headersTimeout = 65000;
-server.timeout = 60000;
