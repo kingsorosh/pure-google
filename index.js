@@ -1,6 +1,8 @@
-const http = require('node:http');
+const express = require('express');
 const { PassThrough, Readable, Transform } = require('node:stream');
 const { pipeline } = require('node:stream/promises');
+
+const app = express();
 
 // =====================DOMAIN=====================
 const TARGET_BASE = (process.env.TARGET_DOMAIN || "").replace(/\/$/, "");
@@ -104,28 +106,16 @@ const STRIP_HEADERS = new Set([
   "x-forwarded-port",
 ]);
 
-// ===================SERVER (Raw Node.js)=======================
-const server = http.createServer(async (req, res) => {
+app.all('*', async (req, res) => {
   if (!TARGET_BASE) {
-    res.statusCode = 500;
-    return res.end();
+    return res.status(500).end();
   }
 
-  // 🔥 دکمه‌ی مرگِ هوشمند
-  const controller = new AbortController();
-  req.on('close', () => {
-    // فقط در صورتی دانلود رو قطع کن که خروجی هنوز باز باشه (یعنی کاربر ناگهانی پریده باشه)
-    if (!res.writableEnded && !res.finished) {
-      controller.abort();
-    }
-  });
-
   try {
-    const targetUrl = TARGET_BASE + req.url;
+    const targetUrl = TARGET_BASE + req.originalUrl;
     const out = new Headers();
     let clientIp = null;
 
-    // روشِ امن برای هدرها (بدون کرش کردن)
     for (const [k, v] of Object.entries(req.headers)) {
       const lowerK = k.toLowerCase();
       if (STRIP_HEADERS.has(lowerK) || lowerK.startsWith("x-vercel-")) continue;
@@ -138,9 +128,7 @@ const server = http.createServer(async (req, res) => {
         if (!clientIp) clientIp = v;
         continue;
       }
-      try {
-        out.set(k, v);
-      } catch (e) {}
+      out.set(k, v);
     }
     
     if (clientIp) out.set("x-forwarded-for", clientIp);
@@ -153,7 +141,6 @@ const server = http.createServer(async (req, res) => {
       headers: out,
       duplex: "half", 
       redirect: "manual",
-      signal: controller.signal // 🔥 وصل کردن دکمه مرگ به دانلود
     };
 
     if (hasBody) {
@@ -165,7 +152,7 @@ const server = http.createServer(async (req, res) => {
 
     const targetResponse = await fetch(targetUrl, fetchOptions);
 
-    res.statusCode = targetResponse.status;
+    res.status(targetResponse.status);
     targetResponse.headers.forEach((value, key) => {
       const lowerKey = key.toLowerCase();
       if (lowerKey !== 'transfer-encoding' && lowerKey !== 'connection') {
@@ -186,15 +173,14 @@ const server = http.createServer(async (req, res) => {
 
   } catch (err) {
     if (!res.headersSent) {
-      res.statusCode = 502;
-      return res.end(); 
+      return res.status(502).end();
     }
     res.destroy(); 
   }
 });
 
 const PORT = process.env.PORT || 8080;
-server.listen(PORT);
+const server = app.listen(PORT);
 
 // ===================MAGIC (The Real Executioners)=======================
 server.keepAliveTimeout = 60000;
