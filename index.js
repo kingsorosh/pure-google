@@ -111,10 +111,13 @@ const server = http.createServer(async (req, res) => {
     return res.end();
   }
 
+  // 🔥 دکمه‌ی مرگِ هوشمند
   const controller = new AbortController();
-  
   req.on('close', () => {
-    controller.abort();
+    // فقط در صورتی دانلود رو قطع کن که خروجی هنوز باز باشه (یعنی کاربر ناگهانی پریده باشه)
+    if (!res.writableEnded && !res.finished) {
+      controller.abort();
+    }
   });
 
   try {
@@ -122,11 +125,9 @@ const server = http.createServer(async (req, res) => {
     const out = new Headers();
     let clientIp = null;
 
-    for (let i = 0; i < req.rawHeaders.length; i += 2) {
-      const k = req.rawHeaders[i];
-      const v = req.rawHeaders[i + 1];
+    // روشِ امن برای هدرها (بدون کرش کردن)
+    for (const [k, v] of Object.entries(req.headers)) {
       const lowerK = k.toLowerCase();
-      
       if (STRIP_HEADERS.has(lowerK) || lowerK.startsWith("x-vercel-")) continue;
       
       if (lowerK === "x-real-ip") {
@@ -137,7 +138,9 @@ const server = http.createServer(async (req, res) => {
         if (!clientIp) clientIp = v;
         continue;
       }
-      out.set(k, v);
+      try {
+        out.set(k, v);
+      } catch (e) {}
     }
     
     if (clientIp) out.set("x-forwarded-for", clientIp);
@@ -150,7 +153,7 @@ const server = http.createServer(async (req, res) => {
       headers: out,
       duplex: "half", 
       redirect: "manual",
-      signal: controller.signal 
+      signal: controller.signal // 🔥 وصل کردن دکمه مرگ به دانلود
     };
 
     if (hasBody) {
@@ -193,7 +196,7 @@ const server = http.createServer(async (req, res) => {
 const PORT = process.env.PORT || 8080;
 server.listen(PORT);
 
-// ===================MAGIC======================
+// ===================MAGIC (The Real Executioners)=======================
 server.keepAliveTimeout = 60000;
 server.headersTimeout = 65000;
 server.timeout = 60000;
