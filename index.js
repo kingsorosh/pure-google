@@ -1,8 +1,6 @@
-const express = require('express');
+const http = require('node:http');
 const { PassThrough, Readable, Transform } = require('node:stream');
 const { pipeline } = require('node:stream/promises');
-
-const app = express();
 
 // =====================DOMAIN=====================
 const TARGET_BASE = (process.env.TARGET_DOMAIN || "").replace(/\/$/, "");
@@ -54,7 +52,7 @@ function createGlobalLimiter(bytesPerSecond) {
       timer = null;
       tryDrain();
       if (queue.length > 0) schedule();
-    }, 5);
+    }, 10); 
   }
 
   return {
@@ -106,24 +104,30 @@ const STRIP_HEADERS = new Set([
   "x-forwarded-port",
 ]);
 
-app.use((req, res, next) => {
-  next();
-});
-
-app.all('*', async (req, res) => {
+// ===================SERVER (Raw Node.js)=======================
+const server = http.createServer(async (req, res) => {
   if (!TARGET_BASE) {
-    return res.status(500).send("Misconfigured: TARGET_DOMAIN is not set");
+    res.statusCode = 500;
+    return res.end();
   }
 
+  const controller = new AbortController();
+  
+  req.on('close', () => {
+    controller.abort();
+  });
+
   try {
-    const targetUrl = TARGET_BASE + req.originalUrl;
+    const targetUrl = TARGET_BASE + req.url;
     const out = new Headers();
     let clientIp = null;
 
-    for (const [k, v] of Object.entries(req.headers)) {
+    for (let i = 0; i < req.rawHeaders.length; i += 2) {
+      const k = req.rawHeaders[i];
+      const v = req.rawHeaders[i + 1];
       const lowerK = k.toLowerCase();
-      if (STRIP_HEADERS.has(lowerK)) continue;
-      if (lowerK.startsWith("x-vercel-")) continue;
+      
+      if (STRIP_HEADERS.has(lowerK) || lowerK.startsWith("x-vercel-")) continue;
       
       if (lowerK === "x-real-ip") {
         clientIp = v;
@@ -146,15 +150,8 @@ app.all('*', async (req, res) => {
       headers: out,
       duplex: "half", 
       redirect: "manual",
+      signal: controller.signal 
     };
-
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => {
-      controller.abort();
-    }, 60000); 
-    
-    fetchOptions.signal = controller.signal;
-    // ======================================================
 
     if (hasBody) {
       const uploadNodeStream = GLOBAL_UPLOAD_LIMITER
@@ -163,14 +160,9 @@ app.all('*', async (req, res) => {
       fetchOptions.body = Readable.toWeb(uploadNodeStream); 
     }
 
-    let targetResponse;
-    try {
-      targetResponse = await fetch(targetUrl, fetchOptions);
-    } finally {
-      clearTimeout(timeoutId);
-    }
+    const targetResponse = await fetch(targetUrl, fetchOptions);
 
-    res.status(targetResponse.status);
+    res.statusCode = targetResponse.status;
     targetResponse.headers.forEach((value, key) => {
       const lowerKey = key.toLowerCase();
       if (lowerKey !== 'transfer-encoding' && lowerKey !== 'connection') {
@@ -190,27 +182,18 @@ app.all('*', async (req, res) => {
     }
 
   } catch (err) {
-    if (err.name === 'AbortError') {
-      if (!res.headersSent) {
-        return res.status(504).send("Gateway Timeout: Connection Reset by 60s Rule");
-      }
-      return;
-    }
-    
-    console.error("relay error:", err);
     if (!res.headersSent) {
-      return res.status(502).send("Bad Gateway: Tunnel Failed");
+      res.statusCode = 502;
+      return res.end(); 
     }
+    res.destroy(); 
   }
 });
 
 const PORT = process.env.PORT || 8080;
-const server = app.listen(PORT, () => {
-  console.log(`XHTTP Proxy is actively listening on Port ${PORT}`);
-  console.log(`Max Upload Speed: ${MAX_UP_BPS ? MAX_UP_BPS + ' bytes/sec' : 'Unlimited'}`);
-  console.log(`Max Download Speed: ${MAX_DOWN_BPS ? MAX_DOWN_BPS + ' bytes/sec' : 'Unlimited'}`);
-});
+server.listen(PORT);
 
-// ===================MAGIC=======================
+// ===================MAGIC======================
 server.keepAliveTimeout = 60000;
 server.headersTimeout = 65000;
+server.timeout = 60000;
