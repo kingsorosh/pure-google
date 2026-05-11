@@ -4,6 +4,10 @@ const { pipeline } = require('node:stream/promises');
 
 const app = express();
 
+// ===================OPTIMIZATIONS===================
+app.disable('x-powered-by');
+app.disable('etag');
+
 // =====================DOMAIN=====================
 const TARGET_BASE = (process.env.TARGET_DOMAIN || "").replace(/\/$/, "");
 
@@ -112,7 +116,7 @@ app.use((req, res, next) => {
 
 app.all('*', async (req, res) => {
   if (!TARGET_BASE) {
-    return res.status(500).send("Misconfigured: TARGET_DOMAIN is not set");
+    return res.status(500).send("Misconfigured");
   }
 
   try {
@@ -154,6 +158,12 @@ app.all('*', async (req, res) => {
     }, 60000); 
     
     fetchOptions.signal = controller.signal;
+    
+    req.on('close', () => {
+      if (!res.writableEnded) {
+        controller.abort();
+      }
+    });
     // ======================================================
 
     if (hasBody) {
@@ -192,25 +202,19 @@ app.all('*', async (req, res) => {
   } catch (err) {
     if (err.name === 'AbortError') {
       if (!res.headersSent) {
-        return res.status(504).send("Gateway Timeout: Connection Reset by 60s Rule");
+        return res.status(504).end();
       }
       return;
     }
     
-    console.error("relay error:", err);
     if (!res.headersSent) {
-      return res.status(502).send("Bad Gateway: Tunnel Failed");
+      return res.status(502).end();
     }
   }
 });
 
 const PORT = process.env.PORT || 8080;
-const server = app.listen(PORT, () => {
-  console.log(`XHTTP Proxy is actively listening on Port ${PORT}`);
-  console.log(`Max Upload Speed: ${MAX_UP_BPS ? MAX_UP_BPS + ' bytes/sec' : 'Unlimited'}`);
-  console.log(`Max Download Speed: ${MAX_DOWN_BPS ? MAX_DOWN_BPS + ' bytes/sec' : 'Unlimited'}`);
-});
-
+const server = app.listen(PORT); 
 // ===================MAGIC=======================
 server.keepAliveTimeout = 60000;
 server.headersTimeout = 65000;
