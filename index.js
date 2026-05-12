@@ -1,11 +1,9 @@
 const http = require('http');
 const https = require('https');
 
-// =====================DOMAIN=====================
 const TARGET_BASE = (process.env.TARGET_DOMAIN || "").replace(/\/$/, "");
 const PORT = process.env.PORT || 8080;
 
-// ===================HEADERS=======================
 const STRIP_HEADERS = new Set([
   "host", "connection", "keep-alive", "proxy-authenticate",
   "proxy-authorization", "te", "trailer", "transfer-encoding",
@@ -34,7 +32,6 @@ const server = http.createServer((req, res) => {
       const lowerK = k.toLowerCase();
 
       if (STRIP_HEADERS.has(lowerK)) continue;
-      if (lowerK.startsWith("x-vercel-")) continue;
 
       if (lowerK === "x-real-ip") {
         clientIp = v;
@@ -61,18 +58,17 @@ const server = http.createServer((req, res) => {
       proxyRes.pipe(res);
     });
 
-    proxyReq.on('error', (err) => {
+    proxyReq.on('error', () => {
       if (!res.headersSent) {
         res.writeHead(502);
         res.end();
       }
     });
 
-    req.on('error', (err) => {
+    req.on('error', () => {
       proxyReq.destroy();
     });
 
-    // ===================MAGIC=======================
     const timeoutId = setTimeout(() => {
       proxyReq.destroy();
     }, 60000);
@@ -90,11 +86,7 @@ const server = http.createServer((req, res) => {
   }
 });
 
-// ===================TIMEOUTS=======================
 server.keepAliveTimeout = 60000;
 server.headersTimeout = 65000;
 
-// اجبار به گوش دادن روی شبکه‌ی عمومی کانتینر برای جلوگیری از ارور گوگل
-server.listen(PORT, '0.0.0.0', () => {
-  console.log(`[Raw Node.js] Proxy is silently running on port ${PORT}...`);
-});
+server.listen(PORT, '0.0.0.0');
