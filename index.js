@@ -69,13 +69,6 @@ const server = http.createServer((req, res) => {
       proxyReq.destroy();
     });
 
-    const timeoutId = setTimeout(() => {
-      proxyReq.destroy();
-    }, 60000);
-
-    proxyReq.on('close', () => clearTimeout(timeoutId));
-    proxyReq.on('error', () => clearTimeout(timeoutId));
-
     req.pipe(proxyReq);
 
   } catch (err) {
