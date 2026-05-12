@@ -1,106 +1,9 @@
-const express = require('express');
-const { PassThrough, Readable, Transform } = require('node:stream');
-const { pipeline } = require('node:stream/promises');
-
-const app = express();
-
-// ===================OPTIMIZATIONS===================
-app.disable('x-powered-by');
-app.disable('etag');
+const http = require('node:http');
+const https = require('node:https');
 
 // =====================DOMAIN=====================
 const TARGET_BASE = (process.env.TARGET_DOMAIN || "").replace(/\/$/, "");
-
-function parseNonNegativeInt(rawValue, fallbackValue) {
-  const value = Number(rawValue);
-  if (!Number.isFinite(value)) return fallbackValue;
-  if (value < 0) return fallbackValue;
-  return Math.trunc(value);
-}
-
-const MAX_UP_BPS = parseNonNegativeInt(process.env.MAX_UP_BPS, 0); 
-const MAX_DOWN_BPS = parseNonNegativeInt(process.env.MAX_DOWN_BPS, 0);
-
-// =================LIMIT=========================
-function createGlobalLimiter(bytesPerSecond) {
-  if (!Number.isFinite(bytesPerSecond) || bytesPerSecond <= 0) return null;
-
-  const burstCap = Math.max(bytesPerSecond, 262144);
-  let tokens = burstCap;
-  let lastRefill = Date.now();
-  const queue = [];
-  let timer = null;
-
-  function refill() {
-    const now = Date.now();
-    const elapsedMs = now - lastRefill;
-    if (elapsedMs <= 0) return;
-    const refillAmount = (elapsedMs * bytesPerSecond) / 1000;
-    tokens = Math.min(burstCap, tokens + refillAmount);
-    lastRefill = now;
-  }
-
-  function tryDrain() {
-    refill();
-    while (queue.length > 0 && tokens >= 1) {
-      const item = queue[0];
-      const grant = Math.min(item.maxBytes, Math.max(1, Math.floor(tokens)));
-      if (grant < 1) break;
-      tokens -= grant;
-      queue.shift();
-      item.resolve(grant);
-    }
-  }
-
-  function schedule() {
-    if (timer) return;
-    timer = setTimeout(() => {
-      timer = null;
-      tryDrain();
-      if (queue.length > 0) schedule();
-    }, 5);
-  }
-
-  return {
-    acquire(maxBytes) {
-      const requested = Math.max(1, Math.trunc(maxBytes || 1));
-      return new Promise((resolve) => {
-        queue.push({ maxBytes: requested, resolve });
-        tryDrain();
-        if (queue.length > 0) schedule();
-      });
-    },
-  };
-}
-
-function createThrottleTransform(limiter) {
-  if (!limiter) return new PassThrough();
-
-  return new Transform({
-    transform(chunk, _encoding, callback) {
-      if (!chunk || chunk.length === 0) {
-        callback();
-        return;
-      }
-
-      (async () => {
-        let offset = 0;
-        while (offset < chunk.length) {
-          const maxBytes = chunk.length - offset;
-          const grant = await limiter.acquire(maxBytes);
-          const piece = chunk.subarray(offset, offset + grant);
-          offset += grant;
-          this.push(piece);
-        }
-      })()
-        .then(() => callback())
-        .catch((err) => callback(err));
-    },
-  });
-}
-
-const GLOBAL_UPLOAD_LIMITER = createGlobalLimiter(MAX_UP_BPS);
-const GLOBAL_DOWNLOAD_LIMITER = createGlobalLimiter(MAX_DOWN_BPS);
+const PORT = process.env.PORT || 8080;
 
 // ===================HEADERS=======================
 const STRIP_HEADERS = new Set([
@@ -110,25 +13,30 @@ const STRIP_HEADERS = new Set([
   "x-forwarded-port",
 ]);
 
-app.use((req, res, next) => {
-  next();
-});
-
-app.all('*', async (req, res) => {
+const server = http.createServer((req, res) => {
   if (!TARGET_BASE) {
-    return res.status(500).end();
+    res.writeHead(500);
+    return res.end();
   }
 
   try {
-    const targetUrl = TARGET_BASE + req.originalUrl;
-    const out = new Headers();
+    const targetUrl = new URL(req.url, TARGET_BASE);
+    const options = {
+      method: req.method,
+      headers: {},
+    };
+
     let clientIp = null;
 
-    for (const [k, v] of Object.entries(req.headers)) {
+    // فیلتر کردن هدرها و تنظیم آی‌پی واقعی
+    for (let i = 0; i < req.rawHeaders.length; i += 2) {
+      const k = req.rawHeaders[i];
+      const v = req.rawHeaders[i + 1];
       const lowerK = k.toLowerCase();
+
       if (STRIP_HEADERS.has(lowerK)) continue;
       if (lowerK.startsWith("x-vercel-")) continue;
-      
+
       if (lowerK === "x-real-ip") {
         clientIp = v;
         continue;
@@ -137,78 +45,64 @@ app.all('*', async (req, res) => {
         if (!clientIp) clientIp = v;
         continue;
       }
-      out.set(k, v);
-    }
-    
-    if (clientIp) out.set("x-forwarded-for", clientIp);
-
-    const method = req.method;
-    const hasBody = method !== "GET" && method !== "HEAD";
-
-    const fetchOptions = {
-      method,
-      headers: out,
-      duplex: "half", 
-      redirect: "manual",
-    };
-
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => {
-      controller.abort();
-    }, 60000); 
-    
-    fetchOptions.signal = controller.signal;
-
-    if (hasBody) {
-      const uploadNodeStream = GLOBAL_UPLOAD_LIMITER
-        ? req.pipe(createThrottleTransform(GLOBAL_UPLOAD_LIMITER))
-        : req;
-      fetchOptions.body = Readable.toWeb(uploadNodeStream); 
+      options.headers[k] = v;
     }
 
-    let targetResponse;
-    try {
-      targetResponse = await fetch(targetUrl, fetchOptions);
-    } finally {
-      clearTimeout(timeoutId);
-    }
+    if (clientIp) options.headers["x-forwarded-for"] = clientIp;
 
-    res.status(targetResponse.status);
-    targetResponse.headers.forEach((value, key) => {
-      const lowerKey = key.toLowerCase();
-      if (lowerKey !== 'transfer-encoding' && lowerKey !== 'connection') {
-        res.setHeader(key, value);
+    // تشخیص اینکه مقصد http هست یا https
+    const protocol = targetUrl.protocol === 'http:' ? http : https;
+
+    // ساختن درخواستِ پروکسی به سمت مقصد
+    const proxyReq = protocol.request(targetUrl, options, (proxyRes) => {
+      const resHeaders = { ...proxyRes.headers };
+      
+      // نود.جی‌اس خودش چانک‌بندی رو مدیریت می‌کنه، پس این هدرها رو حذف می‌کنیم تا تداخل پیش نیاد
+      delete resHeaders['transfer-encoding'];
+      delete resHeaders['connection'];
+
+      res.writeHead(proxyRes.statusCode, resHeaders);
+      
+      // جادوی اصلی: اتصال مستقیم لوله‌ی دانلود بدون درگیر کردن CPU
+      proxyRes.pipe(res);
+    });
+
+    // مدیریت خطاهای پروکسی
+    proxyReq.on('error', (err) => {
+      if (!res.headersSent) {
+        res.writeHead(502);
+        res.end();
       }
     });
 
-    if (targetResponse.body) {
-      const upstreamNode = Readable.fromWeb(targetResponse.body);
-      const downloadStream = GLOBAL_DOWNLOAD_LIMITER
-        ? upstreamNode.pipe(createThrottleTransform(GLOBAL_DOWNLOAD_LIMITER))
-        : upstreamNode;
+    req.on('error', (err) => {
+      proxyReq.destroy();
+    });
 
-      await pipeline(downloadStream, res);
-    } else {
-      res.end();
-    }
+    // ===================MAGIC=======================
+    // ترفندِ ۶۰ ثانیه‌ای برای زنده نگه‌داشتنِ تونل‌های xhttp
+    const timeoutId = setTimeout(() => {
+      proxyReq.destroy();
+    }, 60000);
+
+    proxyReq.on('close', () => clearTimeout(timeoutId));
+    proxyReq.on('error', () => clearTimeout(timeoutId));
+
+    // جادوی دوم: اتصال مستقیم لوله‌ی آپلودِ تو به سمت گوگل
+    req.pipe(proxyReq);
 
   } catch (err) {
-    if (err.name === 'AbortError') {
-      if (!res.headersSent) {
-        return res.status(504).end();
-      }
-      return;
-    }
-    
     if (!res.headersSent) {
-      return res.status(502).end();
+      res.writeHead(500);
+      res.end();
     }
   }
 });
 
-const PORT = process.env.PORT || 8080;
-const server = app.listen(PORT); 
-
-// ===================MAGIC=======================
+// تنظیمات مربوط به جلوگیری از قطعی کانکشن تو کلاد ران
 server.keepAliveTimeout = 60000;
 server.headersTimeout = 65000;
+
+server.listen(PORT, () => {
+  console.log(`[Raw Node.js] Proxy is silently running on port ${PORT}...`);
+});
