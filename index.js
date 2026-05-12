@@ -74,19 +74,17 @@ const server = http.createServer((req, res) => {
       }
     });
 
-    proxyReq.setTimeout(60000, () => {
+    req.on('error', () => {
       if (!proxyReq.destroyed) proxyReq.destroy();
     });
 
-    const safeMemoryCleanup = () => {
+    req.on('aborted', () => {
       if (!proxyReq.destroyed) proxyReq.destroy();
-    };
+    });
 
-    req.on('aborted', safeMemoryCleanup);
-    req.on('error', safeMemoryCleanup);
-    
-    res.on('close', safeMemoryCleanup);
-    res.on('error', safeMemoryCleanup);
+    proxyReq.setTimeout(60000, () => {
+      if (!proxyReq.destroyed) proxyReq.destroy();
+    });
 
     req.pipe(proxyReq);
 
@@ -100,7 +98,7 @@ const server = http.createServer((req, res) => {
   }
 });
 
-server.keepAliveTimeout = 65000;
-server.headersTimeout = 70000;
+server.keepAliveTimeout = 60000;
+server.headersTimeout = 65000;
 
 server.listen(PORT, '0.0.0.0');
