@@ -1,8 +1,5 @@
 const http = require('http');
 const https = require('https');
-const dns = require('dns');
-
-dns.setDefaultResultOrder('ipv4first');
 
 const TARGET_BASE = (process.env.TARGET_DOMAIN || "").replace(/\/$/, "");
 const PORT = process.env.PORT || 8080;
@@ -22,14 +19,13 @@ const server = http.createServer((req, res) => {
 
   try {
     const targetUrl = new URL(req.url, TARGET_BASE);
-    const protocol = targetUrl.protocol === 'http:' ? http : https;
-
     const options = {
       method: req.method,
       headers: {},
     };
 
     let clientIp = null;
+
     for (let i = 0; i < req.rawHeaders.length; i += 2) {
       const k = req.rawHeaders[i];
       const v = req.rawHeaders[i + 1];
@@ -47,7 +43,10 @@ const server = http.createServer((req, res) => {
       }
       options.headers[k] = v;
     }
+
     if (clientIp) options.headers["x-forwarded-for"] = clientIp;
+
+    const protocol = targetUrl.protocol === 'http:' ? http : https;
 
     const proxyReq = protocol.request(targetUrl, options, (proxyRes) => {
       const resHeaders = { ...proxyRes.headers };
@@ -58,30 +57,26 @@ const server = http.createServer((req, res) => {
       res.writeHead(proxyRes.statusCode, resHeaders);
       proxyRes.pipe(res);
 
-      proxyRes.on('error', (err) => {
-        if (!res.destroyed) res.destroy(err);
+      proxyRes.on('error', () => {
+        if (!res.destroyed) res.destroy();
       });
     });
 
-    proxyReq.setTimeout(60000, () => {
-      proxyReq.destroy(new Error('upstream_timeout'));
-    });
-
-    proxyReq.on('error', (err) => {
+    proxyReq.on('error', () => {
       if (!res.headersSent) {
         res.writeHead(502);
         res.end();
       } else if (!res.destroyed) {
-        res.destroy(err);
+        res.destroy(); 
       }
     });
 
-    req.on('error', (err) => {
-      if (!proxyReq.destroyed) proxyReq.destroy(err);
+    req.on('error', () => {
+      proxyReq.destroy();
     });
 
     req.on('aborted', () => {
-      if (!proxyReq.destroyed) proxyReq.destroy(new Error('client_aborted'));
+      proxyReq.destroy();
     });
 
     req.pipe(proxyReq);
@@ -91,12 +86,12 @@ const server = http.createServer((req, res) => {
       res.writeHead(500);
       res.end();
     } else if (!res.destroyed) {
-      res.destroy(err);
+      res.destroy();
     }
   }
 });
 
-server.keepAliveTimeout = 65000; 
+server.keepAliveTimeout = 60000;
 server.headersTimeout = 65000;
 
 server.listen(PORT, '0.0.0.0');
