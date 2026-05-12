@@ -54,30 +54,40 @@ const server = http.createServer((req, res) => {
       delete resHeaders['transfer-encoding'];
       delete resHeaders['connection'];
 
-      res.writeHead(proxyRes.statusCode, resHeaders);
+      if (!res.headersSent) {
+        res.writeHead(proxyRes.statusCode, resHeaders);
+      }
       proxyRes.pipe(res);
 
-      proxyRes.on('error', () => {
-        if (!res.destroyed) res.destroy();
-      });
+      proxyRes.on('error', cleanup);
     });
 
-    proxyReq.on('error', () => {
-      if (!res.headersSent) {
+    // ==========================================
+    let cleanedUp = false;
+    function cleanup() {
+      if (cleanedUp) return;
+      cleanedUp = true;
+      if (!req.destroyed) req.destroy();
+      if (!res.destroyed) res.destroy();
+      if (!proxyReq.destroyed) proxyReq.destroy();
+    }
+
+    req.on('error', cleanup);
+    req.on('aborted', cleanup);
+    req.on('close', cleanup); 
+    
+    res.on('error', cleanup);
+    res.on('close', cleanup); 
+
+    proxyReq.on('error', (err) => {
+      if (!res.headersSent && !res.destroyed) {
         res.writeHead(502);
         res.end();
-      } else if (!res.destroyed) {
-        res.destroy(); 
       }
+      cleanup();
     });
 
-    req.on('error', () => {
-      proxyReq.destroy();
-    });
-
-    req.on('aborted', () => {
-      proxyReq.destroy();
-    });
+    proxyReq.setTimeout(65000, cleanup);
 
     req.pipe(proxyReq);
 
@@ -91,7 +101,7 @@ const server = http.createServer((req, res) => {
   }
 });
 
-server.keepAliveTimeout = 60000;
-server.headersTimeout = 65000;
+server.keepAliveTimeout = 65000;
+server.headersTimeout = 70000;
 
 server.listen(PORT, '0.0.0.0');
