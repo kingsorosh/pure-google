@@ -1,5 +1,5 @@
-const http = require('node:http');
-const https = require('node:https');
+const http = require('http');
+const https = require('https');
 
 // =====================DOMAIN=====================
 const TARGET_BASE = (process.env.TARGET_DOMAIN || "").replace(/\/$/, "");
@@ -28,7 +28,6 @@ const server = http.createServer((req, res) => {
 
     let clientIp = null;
 
-    // فیلتر کردن هدرها و تنظیم آی‌پی واقعی
     for (let i = 0; i < req.rawHeaders.length; i += 2) {
       const k = req.rawHeaders[i];
       const v = req.rawHeaders[i + 1];
@@ -50,24 +49,18 @@ const server = http.createServer((req, res) => {
 
     if (clientIp) options.headers["x-forwarded-for"] = clientIp;
 
-    // تشخیص اینکه مقصد http هست یا https
     const protocol = targetUrl.protocol === 'http:' ? http : https;
 
-    // ساختن درخواستِ پروکسی به سمت مقصد
     const proxyReq = protocol.request(targetUrl, options, (proxyRes) => {
       const resHeaders = { ...proxyRes.headers };
       
-      // نود.جی‌اس خودش چانک‌بندی رو مدیریت می‌کنه، پس این هدرها رو حذف می‌کنیم تا تداخل پیش نیاد
       delete resHeaders['transfer-encoding'];
       delete resHeaders['connection'];
 
       res.writeHead(proxyRes.statusCode, resHeaders);
-      
-      // جادوی اصلی: اتصال مستقیم لوله‌ی دانلود بدون درگیر کردن CPU
       proxyRes.pipe(res);
     });
 
-    // مدیریت خطاهای پروکسی
     proxyReq.on('error', (err) => {
       if (!res.headersSent) {
         res.writeHead(502);
@@ -80,7 +73,6 @@ const server = http.createServer((req, res) => {
     });
 
     // ===================MAGIC=======================
-    // ترفندِ ۶۰ ثانیه‌ای برای زنده نگه‌داشتنِ تونل‌های xhttp
     const timeoutId = setTimeout(() => {
       proxyReq.destroy();
     }, 60000);
@@ -88,7 +80,6 @@ const server = http.createServer((req, res) => {
     proxyReq.on('close', () => clearTimeout(timeoutId));
     proxyReq.on('error', () => clearTimeout(timeoutId));
 
-    // جادوی دوم: اتصال مستقیم لوله‌ی آپلودِ تو به سمت گوگل
     req.pipe(proxyReq);
 
   } catch (err) {
@@ -99,10 +90,11 @@ const server = http.createServer((req, res) => {
   }
 });
 
-// تنظیمات مربوط به جلوگیری از قطعی کانکشن تو کلاد ران
+// ===================TIMEOUTS=======================
 server.keepAliveTimeout = 60000;
 server.headersTimeout = 65000;
 
-server.listen(PORT, () => {
+// اجبار به گوش دادن روی شبکه‌ی عمومی کانتینر برای جلوگیری از ارور گوگل
+server.listen(PORT, '0.0.0.0', () => {
   console.log(`[Raw Node.js] Proxy is silently running on port ${PORT}...`);
 });
