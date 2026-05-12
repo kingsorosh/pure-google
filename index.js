@@ -13,7 +13,7 @@ const STRIP_HEADERS = new Set([
 
 const server = http.createServer((req, res) => {
   if (!TARGET_BASE) {
-    if (!res.headersSent) res.writeHead(500);
+    res.writeHead(500);
     return res.end();
   }
 
@@ -54,10 +54,7 @@ const server = http.createServer((req, res) => {
       delete resHeaders['transfer-encoding'];
       delete resHeaders['connection'];
 
-      if (!res.headersSent) {
-        res.writeHead(proxyRes.statusCode, resHeaders);
-      }
-      
+      res.writeHead(proxyRes.statusCode, resHeaders);
       proxyRes.pipe(res);
 
       proxyRes.on('error', () => {
@@ -75,15 +72,11 @@ const server = http.createServer((req, res) => {
     });
 
     req.on('error', () => {
-      if (!proxyReq.destroyed) proxyReq.destroy();
+      proxyReq.destroy();
     });
 
     req.on('aborted', () => {
-      if (!proxyReq.destroyed) proxyReq.destroy();
-    });
-
-    proxyReq.setTimeout(60000, () => {
-      if (!proxyReq.destroyed) proxyReq.destroy();
+      proxyReq.destroy();
     });
 
     req.pipe(proxyReq);
