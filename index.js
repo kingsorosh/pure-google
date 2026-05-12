@@ -13,7 +13,7 @@ const STRIP_HEADERS = new Set([
 
 const server = http.createServer((req, res) => {
   if (!TARGET_BASE) {
-    res.writeHead(500);
+    if (!res.headersSent) res.writeHead(500);
     return res.end();
   }
 
@@ -57,37 +57,36 @@ const server = http.createServer((req, res) => {
       if (!res.headersSent) {
         res.writeHead(proxyRes.statusCode, resHeaders);
       }
+      
       proxyRes.pipe(res);
 
-      proxyRes.on('error', cleanup);
+      proxyRes.on('error', () => {
+        if (!res.destroyed) res.destroy();
+      });
     });
 
-    // ==========================================
-    let cleanedUp = false;
-    function cleanup() {
-      if (cleanedUp) return;
-      cleanedUp = true;
-      if (!req.destroyed) req.destroy();
-      if (!res.destroyed) res.destroy();
-      if (!proxyReq.destroyed) proxyReq.destroy();
-    }
-
-    req.on('error', cleanup);
-    req.on('aborted', cleanup);
-    req.on('close', cleanup); 
-    
-    res.on('error', cleanup);
-    res.on('close', cleanup); 
-
-    proxyReq.on('error', (err) => {
-      if (!res.headersSent && !res.destroyed) {
+    proxyReq.on('error', () => {
+      if (!res.headersSent) {
         res.writeHead(502);
         res.end();
+      } else if (!res.destroyed) {
+        res.destroy(); 
       }
-      cleanup();
     });
 
-    proxyReq.setTimeout(65000, cleanup);
+    proxyReq.setTimeout(60000, () => {
+      if (!proxyReq.destroyed) proxyReq.destroy();
+    });
+
+    const safeMemoryCleanup = () => {
+      if (!proxyReq.destroyed) proxyReq.destroy();
+    };
+
+    req.on('aborted', safeMemoryCleanup);
+    req.on('error', safeMemoryCleanup);
+    
+    res.on('close', safeMemoryCleanup);
+    res.on('error', safeMemoryCleanup);
 
     req.pipe(proxyReq);
 
