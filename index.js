@@ -96,7 +96,7 @@ const server = http.createServer((req, res) => {
   }
 });
 
-server.keepAliveTimeout = 120000; 
-server.headersTimeout = 125000;
+server.keepAliveTimeout = 65000; 
+server.headersTimeout = 65000;
 
 server.listen(PORT, '0.0.0.0');
