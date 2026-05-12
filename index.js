@@ -56,17 +56,31 @@ const server = http.createServer((req, res) => {
 
       res.writeHead(proxyRes.statusCode, resHeaders);
       proxyRes.pipe(res);
+
+      proxyRes.on('error', () => {
+        if (!res.destroyed) res.destroy();
+      });
     });
 
     proxyReq.on('error', () => {
       if (!res.headersSent) {
         res.writeHead(502);
         res.end();
+      } else if (!res.destroyed) {
+        res.destroy();
       }
     });
 
+    req.on('close', () => {
+      if (!proxyReq.destroyed) proxyReq.destroy();
+    });
+
+    res.on('close', () => {
+      if (!proxyReq.destroyed) proxyReq.destroy();
+    });
+
     req.on('error', () => {
-      proxyReq.destroy();
+      if (!proxyReq.destroyed) proxyReq.destroy();
     });
 
     req.pipe(proxyReq);
@@ -75,6 +89,8 @@ const server = http.createServer((req, res) => {
     if (!res.headersSent) {
       res.writeHead(500);
       res.end();
+    } else if (!res.destroyed) {
+      res.destroy();
     }
   }
 });
