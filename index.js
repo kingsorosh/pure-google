@@ -1,5 +1,6 @@
 const http = require('http');
-const https = require('https');
+const { pipeline } = require('node:stream/promises');
+const { Readable } = require('node:stream');
 
 const TARGET_BASE = (process.env.TARGET_DOMAIN || "").replace(/\/$/, "");
 const PORT = process.env.PORT || 8080;
@@ -11,19 +12,15 @@ const STRIP_HEADERS = new Set([
   "x-forwarded-port",
 ]);
 
-const server = http.createServer((req, res) => {
+const server = http.createServer(async (req, res) => {
   if (!TARGET_BASE) {
     res.writeHead(500);
-    return res.end();
+    return res.end("Misconfigured: TARGET_DOMAIN is not set");
   }
 
   try {
-    const targetUrl = new URL(req.url, TARGET_BASE);
-    const options = {
-      method: req.method,
-      headers: {},
-    };
-
+    const targetUrl = TARGET_BASE + req.url;
+    const outHeaders = new Headers();
     let clientIp = null;
 
     for (let i = 0; i < req.rawHeaders.length; i += 2) {
@@ -32,7 +29,8 @@ const server = http.createServer((req, res) => {
       const lowerK = k.toLowerCase();
 
       if (STRIP_HEADERS.has(lowerK)) continue;
-
+      if (lowerK.startsWith("x-vercel-")) continue;
+      
       if (lowerK === "x-real-ip") {
         clientIp = v;
         continue;
@@ -41,49 +39,64 @@ const server = http.createServer((req, res) => {
         if (!clientIp) clientIp = v;
         continue;
       }
-      options.headers[k] = v;
+      outHeaders.set(k, v);
+    }
+    
+    if (clientIp) outHeaders.set("x-forwarded-for", clientIp);
+
+    const method = req.method;
+    const hasBody = method !== "GET" && method !== "HEAD";
+
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => {
+      controller.abort();
+    }, 60000); 
+
+    const fetchOptions = {
+      method,
+      headers: outHeaders,
+      duplex: "half", 
+      redirect: "manual",
+      signal: controller.signal
+    };
+
+    if (hasBody) {
+      fetchOptions.body = Readable.toWeb(req); 
     }
 
-    if (clientIp) options.headers["x-forwarded-for"] = clientIp;
+    let targetResponse;
+    try {
+      targetResponse = await fetch(targetUrl, fetchOptions);
+    } finally {
+      clearTimeout(timeoutId);
+    }
 
-    const protocol = targetUrl.protocol === 'http:' ? http : https;
-
-    const proxyReq = protocol.request(targetUrl, options, (proxyRes) => {
-      const resHeaders = { ...proxyRes.headers };
-      
-      delete resHeaders['transfer-encoding'];
-      delete resHeaders['connection'];
-
-      res.writeHead(proxyRes.statusCode, resHeaders);
-      proxyRes.pipe(res);
-
-      proxyRes.on('error', () => {
-        if (!res.destroyed) res.destroy();
-      });
-    });
-
-    proxyReq.on('error', () => {
-      if (!res.headersSent) {
-        res.writeHead(502);
-        res.end();
-      } else if (!res.destroyed) {
-        res.destroy(); 
+    res.statusCode = targetResponse.status;
+    targetResponse.headers.forEach((value, key) => {
+      const lowerKey = key.toLowerCase();
+      if (lowerKey !== 'transfer-encoding' && lowerKey !== 'connection') {
+        res.setHeader(key, value);
       }
     });
 
-    req.on('error', () => {
-      proxyReq.destroy();
-    });
-
-    req.on('aborted', () => {
-      proxyReq.destroy();
-    });
-
-    req.pipe(proxyReq);
+    if (targetResponse.body) {
+      const downloadStream = Readable.fromWeb(targetResponse.body);
+      await pipeline(downloadStream, res);
+    } else {
+      res.end();
+    }
 
   } catch (err) {
+    if (err.name === 'AbortError') {
+      if (!res.headersSent) {
+        res.writeHead(504);
+        res.end(); 
+      }
+      return;
+    }
+    
     if (!res.headersSent) {
-      res.writeHead(500);
+      res.writeHead(502);
       res.end();
     } else if (!res.destroyed) {
       res.destroy();
